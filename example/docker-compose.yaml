@@ -1,0 +1,18 @@
+services:
+  mc-stats:
+    image: ghcr.io/xstar97/mc-stats:3.3.1
+    container_name: mc-stats
+    restart: unless-stopped
+    ports:
+      - 8080:8080 # internal port can be set via PORT variable
+    environment:
+      PORT: 8080
+      # global
+      INTERVAL_SECONDS: 300
+      INSTANCES=survival # comma delim instance separator
+      # separate interval updater per instance
+      # INTERVAL_SECONDS_SURVIVAL=600
+    volumes:
+      # do whatever you want here; internal path should be /config for the data and the instance public dir(web) in /config
+      - ./config:/config
+      # mount minecraft data here
