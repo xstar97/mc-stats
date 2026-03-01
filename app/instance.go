@@ -31,6 +31,7 @@ type Instance struct {
 func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 	var instances []*Instance
 
+	// Ensure base directory exists
 	if err := os.MkdirAll(cfg.BaseDir, 0755); err != nil {
 		return nil, nil, err
 	}
@@ -38,13 +39,18 @@ func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 	uid := os.Getuid()
 	gid := os.Getgid()
 
+	defaultWebDir := "/opt/web"
+	defaultStatsDir := "/opt/mcstats/stats"
+
 	for _, name := range cfg.Instances {
 		name = strings.TrimSpace(name)
 		instDir := filepath.Join(cfg.BaseDir, name)
 		publicDir := filepath.Join(instDir, "public")
-		eventsDir := filepath.Join(instDir, "events")
 		statsDir := filepath.Join(instDir, "stats")
-		initializedFile := filepath.Join(instDir, ".initialized")
+		eventsDir := filepath.Join(instDir, "events")
+
+		webInitFile := filepath.Join(instDir, ".initialized_web")
+		statsInitFile := filepath.Join(instDir, ".initialized_stats")
 
 		// Ensure directories exist
 		for _, dir := range []string{instDir, publicDir, eventsDir, statsDir} {
@@ -56,16 +62,13 @@ func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 		}
 
 		// Copy web assets if not yet initialized
-		if _, err := os.Stat(initializedFile); os.IsNotExist(err) {
+		if _, err := os.Stat(webInitFile); os.IsNotExist(err) {
 			log.Printf("[%s] Initializing web assets", name)
-			if err := copyDir("/opt/web", publicDir); err != nil {
+			if err := copyDir(defaultWebDir, publicDir); err != nil {
 				log.Printf("[%s] Failed to copy web assets: %v", name, err)
 			} else {
-				// Create the marker file
-				if f, err := os.Create(initializedFile); err == nil {
+				if f, err := os.Create(webInitFile); err == nil {
 					f.Close()
-				} else {
-					log.Printf("[%s] Failed to create .initialized file: %v", name, err)
 				}
 			}
 			chownRecursive(publicDir, uid, gid)
@@ -73,6 +76,22 @@ func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 			log.Printf("[%s] Web assets already initialized, skipping", name)
 		}
 
+		// Copy stats if not yet initialized
+		if _, err := os.Stat(statsInitFile); os.IsNotExist(err) {
+			log.Printf("[%s] Initializing stats folder", name)
+			if err := copyDir(defaultStatsDir, statsDir); err != nil {
+				log.Printf("[%s] Failed to copy default stats: %v", name, err)
+			} else {
+				if f, err := os.Create(statsInitFile); err == nil {
+					f.Close()
+				}
+			}
+			chownRecursive(statsDir, uid, gid)
+		} else {
+			log.Printf("[%s] Stats folder already initialized, skipping", name)
+		}
+
+		// Create instance object
 		inst := &Instance{
 			Name:      name,
 			Dir:       instDir,
@@ -80,13 +99,13 @@ func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 			Interval:  getInstanceInterval(name),
 			NextRun:   time.Now(),
 		}
-
 		instances = append(instances, inst)
 	}
 
 	// Context for cancellation of all instance loops
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Start run loops
 	for _, inst := range instances {
 		go inst.runLoop(ctx)
 		log.Printf("Started instance %s (interval %v)", inst.Name, inst.Interval)
