@@ -143,13 +143,3 @@ func (i *Instance) runGeneration() {
 		log.Printf("[%s] Generation succeeded in %v", i.Name, duration)
 	}
 }
-
-// chownRecursive changes ownership of dir recursively
-func chownRecursive(path string, uid, gid int) {
-	filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-		if err == nil {
-			os.Chown(p, uid, gid)
-		}
-		return nil
-	})
-}
