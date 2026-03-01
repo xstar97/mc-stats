@@ -6,27 +6,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
-	"strings"
 )
 
+// Instance represents a single MinecraftStats instance
 type Instance struct {
 	Name      string
 	Dir       string
 	PublicDir string
 	Interval  time.Duration
 
-	mu        sync.Mutex
-	LastGen   time.Time
-	LastDur   time.Duration
-	Success   bool
-	LastError string
+	mu         sync.Mutex
+	LastGen    time.Time
+	LastDur    time.Duration
+	Success    bool
+	LastError  string
 	CurrentPID int
-	NextRun   time.Time
+	NextRun    time.Time
 }
 
-// Initialize instances with directories, web assets, and start run loops
+// InitializeInstances sets up all instances, copies web assets if necessary, and starts the run loops
 func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 	var instances []*Instance
 
@@ -41,20 +42,35 @@ func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 		name = strings.TrimSpace(name)
 		instDir := filepath.Join(cfg.BaseDir, name)
 		publicDir := filepath.Join(instDir, "public")
+		eventsDir := filepath.Join(instDir, "events")
+		statsDir := filepath.Join(instDir, "stats")
+		initializedFile := filepath.Join(instDir, ".initialized")
 
-		if err := os.MkdirAll(instDir, 0755); err != nil {
-			log.Printf("Failed to create %s: %v", instDir, err)
-			continue
+		// Ensure directories exist
+		for _, dir := range []string{instDir, publicDir, eventsDir, statsDir} {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				log.Printf("[%s] Failed to create directory %s: %v", name, dir, err)
+				continue
+			}
+			chownRecursive(dir, uid, gid)
 		}
 
-		chownRecursive(instDir, uid, gid)
-
-		if _, err := os.Stat(publicDir); os.IsNotExist(err) {
-			log.Printf("Initializing web assets for %s", name)
+		// Copy web assets if not yet initialized
+		if _, err := os.Stat(initializedFile); os.IsNotExist(err) {
+			log.Printf("[%s] Initializing web assets", name)
 			if err := copyDir("/opt/web", publicDir); err != nil {
-				log.Printf("Failed copying web assets for %s: %v", name, err)
+				log.Printf("[%s] Failed to copy web assets: %v", name, err)
+			} else {
+				// Create the marker file
+				if f, err := os.Create(initializedFile); err == nil {
+					f.Close()
+				} else {
+					log.Printf("[%s] Failed to create .initialized file: %v", name, err)
+				}
 			}
 			chownRecursive(publicDir, uid, gid)
+		} else {
+			log.Printf("[%s] Web assets already initialized, skipping", name)
 		}
 
 		inst := &Instance{
@@ -68,7 +84,7 @@ func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 		instances = append(instances, inst)
 	}
 
-	// Context for cancellation
+	// Context for cancellation of all instance loops
 	ctx, cancel := context.WithCancel(context.Background())
 
 	for _, inst := range instances {
@@ -79,12 +95,12 @@ func InitializeInstances(cfg Config) ([]*Instance, context.CancelFunc, error) {
 	return instances, cancel, nil
 }
 
-// Run generation on a ticker
+// runLoop executes the generation on a ticker
 func (i *Instance) runLoop(ctx context.Context) {
 	ticker := time.NewTicker(i.Interval)
 	defer ticker.Stop()
 
-	// Immediate first run
+	// Run immediately once
 	i.runGeneration()
 
 	for {
@@ -98,7 +114,7 @@ func (i *Instance) runLoop(ctx context.Context) {
 	}
 }
 
-// Execute MinecraftStats CLI for instance
+// runGeneration executes MinecraftStatsCLI for this instance
 func (i *Instance) runGeneration() {
 	start := time.Now()
 	cmd := exec.Command(
@@ -118,6 +134,7 @@ func (i *Instance) runGeneration() {
 	i.LastGen = time.Now()
 	i.LastDur = duration
 	i.Success = err == nil
+	i.CurrentPID = 0
 	if err != nil {
 		i.LastError = string(output)
 		log.Printf("[%s] Generation failed: %v\n%s", i.Name, err, i.LastError)
@@ -125,4 +142,14 @@ func (i *Instance) runGeneration() {
 		i.LastError = ""
 		log.Printf("[%s] Generation succeeded in %v", i.Name, duration)
 	}
+}
+
+// chownRecursive changes ownership of dir recursively
+func chownRecursive(path string, uid, gid int) {
+	filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+		if err == nil {
+			os.Chown(p, uid, gid)
+		}
+		return nil
+	})
 }
